@@ -36,6 +36,25 @@ sys_wait(void)
 }
 
 uint64
+sys_sigalarm(void)
+{
+  uint64 addr=0;
+  int n;
+  argint(0, &n);
+  sigalarm(n, addr);
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  memmove(p->trapframe, &p->trapframe->saved_trapframe, sizeof(struct trapframe)); // restore all registers
+  p->trapframe->in_handler = 0;
+  return  p->trapframe->a0; // don't overwrite restored a0
+}
+
+uint64
 sys_sbrk(void)
 {
   uint64 addr;
@@ -67,6 +86,7 @@ sys_sleep(void)
     sleep(&ticks, &tickslock);
   }
   release(&tickslock);
+  backtrace();
   return 0;
 }
 

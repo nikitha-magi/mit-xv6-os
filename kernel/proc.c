@@ -145,7 +145,11 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  if((p->trapframe->saved_trapframe = (struct trapframe *)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
   return p;
 }
 
@@ -160,6 +164,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->trapframe->saved_trapframe)
+    kfree((void*)p->trapframe->saved_trapframe);
+  p->trapframe->saved_trapframe = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -252,6 +259,16 @@ userinit(void)
   p->state = RUNNABLE;
 
   release(&p->lock);
+}
+
+void
+sigalarm(int n, uint64 addr)
+{
+  struct proc *p = myproc();
+  p->tick_count = 0;
+  p->threshold = n;
+  p->handler = (void *)addr;
+  p->trapframe->in_handler = 0;
 }
 
 // Grow or shrink user memory by n bytes.

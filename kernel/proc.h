@@ -77,6 +77,8 @@ struct trapframe {
   /* 264 */ uint64 t4;
   /* 272 */ uint64 t5;
   /* 280 */ uint64 t6;
+  struct trapframe *saved_trapframe;  // save full context for alarm
+  int in_handler;
 };
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
@@ -104,4 +106,7 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int tick_count;              // ticks since start of process
+  void (*handler)(void);       // pointer to handler function for alarm
+  int threshold;              // ticks between alarms
 };

@@ -176,3 +176,14 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+void
+backtrace(void)
+{
+  uint64* fp = (uint64 *)r_fp();
+  uint64 page = PGROUNDDOWN((uint64)fp);
+  while(PGROUNDDOWN((uint64)fp) == page) {
+  printf("\nFrame Pointer = %p\n", (void *)*(fp - 1));
+  fp = (uint64*)(*(fp - 2));
+  }
+}

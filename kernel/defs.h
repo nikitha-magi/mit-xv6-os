@@ -80,12 +80,14 @@ int             pipewrite(struct pipe*, uint64, int);
 int            printf(char*, ...) __attribute__ ((format (printf, 1, 2)));
 void            panic(char*) __attribute__((noreturn));
 void            printfinit(void);
+void            backtrace(void);
 
 // proc.c
 int             cpuid(void);
 void            exit(int);
 int             fork(void);
 int             growproc(int);
+void            sigalarm(int, uint64);
 void            proc_mapstacks(pagetable_t);
 pagetable_t     proc_pagetable(struct proc *);
 void            proc_freepagetable(pagetable_t, uint64);
