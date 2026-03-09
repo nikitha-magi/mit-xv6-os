@@ -19,6 +19,7 @@ OBJS = \
   $K/trampoline.o \
   $K/trap.o \
   $K/syscall.o \
+  $K/pagefault.o \
   $K/sysproc.o \
   $K/bio.o \
   $K/fs.o \

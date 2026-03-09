@@ -9,6 +9,7 @@
 #include "riscv.h"
 #include "defs.h"
 
+int refcount[PHY_PAGES];
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -23,10 +24,31 @@ struct {
   struct run *freelist;
 } kmem;
 
+
+struct spinlock reflock;   // add here
+int refcount[PHY_PAGES];
+
+void
+refinc(void *pa)
+{
+  acquire(&reflock);
+  refcount[PA2INDX(pa)]++;
+  release(&reflock);
+}
+
+void
+refdesc(void *pa)
+{
+  acquire(&reflock);
+  refcount[PA2INDX(pa)]--;
+  release(&reflock);
+}
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&reflock, "reflock");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -49,8 +71,16 @@ kfree(void *pa)
   struct run *r;
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
-    panic("kfree");
-
+    {panic("kfree");}
+  
+  acquire(&reflock);
+  if(refcount[PA2INDX(pa)] > 1){
+    refcount[PA2INDX(pa)]--;
+    release(&reflock);
+    return;
+  }
+  refcount[PA2INDX(pa)] = 0;
+  release(&reflock);
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -76,7 +106,9 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r){
+    refcount[PA2INDX(r)] = 1;
     memset((char*)r, 5, PGSIZE); // fill with junk
+  }
   return (void*)r;
 }

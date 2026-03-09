@@ -330,6 +330,7 @@ parsecmd(char *s)
 {
   char *es;
   struct cmd *cmd;
+  printf("%s", s);
 
   es = s + strlen(s);
   cmd = parseline(&s, es);
