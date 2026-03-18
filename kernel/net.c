@@ -17,6 +17,17 @@ static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
 // qemu host's ethernet address.
 static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
+// UDP receive Queue data structure
+struct struct_port{
+    int port;
+    char* buff[16];
+    int next_avail;
+    int read;
+    struct struct_port* next;
+};
+
+static struct struct_port* lports = NULL;
+
 static struct spinlock netlock;
 
 void
@@ -34,11 +45,31 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
-
-  return -1;
+  int sport;
+  struct struct_port* prev_lport = NULL;
+  acquire(&netlock);
+  struct struct_port* curr_lport = lports;  
+  argint(0, &sport);
+  while(curr_lport && curr_lport->port != sport)
+  {
+      prev_lport = curr_lport;
+      curr_lport = curr_lport->next;
+  }
+  if(curr_lport) {
+    release(&netlock);
+    return 0;
+  }
+  curr_lport = (struct struct_port*) kalloc();
+  curr_lport->port = sport;
+  curr_lport->next = NULL;
+  curr_lport->next_avail = 0;
+  curr_lport->read = 0;  // missing!
+  if(prev_lport)
+      prev_lport->next = curr_lport;
+  else
+      lports = curr_lport;
+  release(&netlock);
+  return 0;
 }
 
 //
@@ -74,10 +105,52 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
-  return -1;
+  struct proc *p = myproc();
+  int dport;
+  uint64 src, sport;
+  uint64 bufaddr;
+  int maxlen;
+  argint(0, &dport);
+  argaddr(1, &src);
+  argaddr(2, &sport);
+  argaddr(3, &bufaddr);
+  argint(4, &maxlen);
+
+  acquire(&netlock);
+  struct struct_port* curr_lport = lports;
+  while(curr_lport && curr_lport->port != dport)
+  {
+      curr_lport = curr_lport->next;
+  }
+  if(!curr_lport) {
+    release(&netlock);
+    return -1;
+  }
+  while(curr_lport->next_avail == curr_lport->read)
+      sleep(curr_lport, &netlock);
+
+  char *buf = curr_lport->buff[curr_lport->read % 16];
+  curr_lport->read++;
+
+  struct eth *ineth = (struct eth *) buf;
+  struct ip *inip = (struct ip *) (ineth + 1);
+  struct udp *inudp = (struct udp *) (inip + 1);
+  char *payload = (char *) inudp + 1;
+
+  uint32 ip_src    = ntohl(inip->ip_src);
+  uint16 udp_sport = ntohs(inudp->sport);
+  copyout(p->pagetable, src,   (char*)&ip_src,    sizeof(uint32));
+  copyout(p->pagetable, sport, (char*)&udp_sport,  sizeof(uint16));
+  copyout(p->pagetable, bufaddr, payload, plen);
+
+  if(copyout(p->pagetable, bufaddr, payload, maxlen) < 0){
+    release(&netlock);  // missing!
+    kfree(buf);  
+    return -1;
+  }
+  kfree(buf);
+  release(&netlock);
+  return plen;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -174,9 +247,13 @@ sys_send(void)
     return -1;
   }
 
-  e1000_transmit(buf, total);
-
-  return 0;
+  if(e1000_transmit(buf, total) < 0) {
+    kfree(buf);
+    printf("send: copyin failed\n");
+    return -1;
+  }
+  printf("send: success from net.c\n");
+  return len;
 }
 
 void
@@ -188,10 +265,32 @@ ip_rx(char *buf, int len)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
-  
+  struct eth *ineth = (struct eth *) buf;
+  struct ip *inip = (struct ip *) (ineth + 1);
+  struct udp *inudp = (struct udp *) (inip + 1);
+  char *payload = (char *) (inudp + 1);
+
+  acquire(&netlock);
+  struct struct_port* curr_lport = lports;
+  int dport = (int) ntohs(inudp->dport);
+  while(curr_lport && curr_lport->port != dport)
+  {
+      curr_lport = curr_lport->next;
+  }
+  if(!curr_lport){
+      kfree(buf);
+      release(&netlock);
+      return;
+  }
+  if(curr_lport->next_avail - curr_lport->read >= 16) {
+    kfree(buf);  // missing — memory leak!
+    release(&netlock);
+    return;
+  }
+  curr_lport->buff[curr_lport->next_avail % 16] = buf;
+  curr_lport->next_avail++;
+  wakeup(curr_lport);
+  release(&netlock);
 }
 
 //
