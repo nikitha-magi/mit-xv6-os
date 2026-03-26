@@ -304,10 +304,10 @@ create(char *path, short type, short major, short minor)
 uint64
 sys_open(void)
 {
-  char path[MAXPATH];
+  char path[MAXPATH], target[MAXPATH];
   int fd, omode;
   struct file *f;
-  struct inode *ip;
+  struct inode *ip, *symlink;
   int n;
 
   argint(1, &omode);
@@ -315,6 +315,38 @@ sys_open(void)
     return -1;
 
   begin_op();
+
+  if(!(omode & O_NOFOLLOW)){
+    for(int i = 0; i < 10; i++){
+      if((symlink = namei(path)) == 0)
+        break;
+
+      ilock(symlink);
+
+      if(symlink->type != T_SYMLINK){
+        iunlockput(symlink);  // not symlink → let rest of open handle it
+        symlink = 0;
+        break;
+      }
+
+      // read target path
+      int len = readi(symlink, 0, (uint64)target, 0, MAXPATH);
+      iunlockput(symlink);
+
+      if(len <= 0){
+        end_op();
+        return -1;
+      }
+
+      target[len] = 0;  // null terminate
+      safestrcpy(path, target, MAXPATH);
+
+      if(i == 9){       // max depth reached → cycle
+        end_op();
+        return -1;
+      }
+    }
+  }
 
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
@@ -503,3 +535,30 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_symlink(void)
+{
+  char linkpath[MAXPATH], old[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, linkpath, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  if((ip = create(linkpath, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+
+  if (writei(ip, 0, (uint64)old, 0, strlen(old)) != strlen(old)) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
