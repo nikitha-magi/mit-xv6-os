@@ -5,6 +5,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"  // Defines struct sleeplock for file.h
+#include "fs.h"          // Defines NDIRECT for file.h
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,6 +70,9 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 15 || r_scause() == 13){
+    printf("Faulting VA: %ld, scause: %ld\n", r_stval(), r_scause());
+    spagefault();
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
@@ -81,6 +87,57 @@ usertrap(void)
     yield();
 
   usertrapret();
+}
+
+void
+spagefault(void) {
+  struct proc *p = myproc();
+  uint64 va = r_stval(); // Virtual address that faulted [cite: 1256]
+  uint64 va_down = PGROUNDDOWN(va);
+  struct virtualMem *vma = 0;
+  int i;
+
+  // 1. Find the VMA containing the faulting address
+  for(i = 0; i < 16; i++) {
+    if(p->vma[i].used && (va >= p->vma[i].addr) && (va <= (p->vma[i].addr + p->vma[i].len))) {
+      vma = &p->vma[i];
+      break;
+    }
+  }
+
+  if(vma == 0) {
+    p->killed = 1; // Not a valid mmap region [cite: 1175]
+    return;
+  }
+
+  // 2. Allocate one physical page [cite: 904, 1273]
+  char *pa = kalloc();
+  if(pa == 0) {
+    p->killed = 1;
+    return;
+  }
+  memset(pa, 0, PGSIZE);
+
+  // 3. Read file contents into the page [cite: 1008, 1285]
+  // Calculate offset: VMA start offset + distance into the VMA
+  uint64 file_offset = vma->offset + (va_down - vma->addr);
+  
+  ilock(vma->fd->ip); // Lock the inode before reading [cite: 2544, 2563]
+  // readi returns the number of bytes read [cite: 162, 2628]
+  readi(vma->fd->ip, 0, (uint64)pa, file_offset, PGSIZE);
+  iunlock(vma->fd->ip); // Release inode lock [cite: 2546, 2564]
+
+  // 4. Map the physical page to the virtual address [cite: 876, 980]
+  // Combine VMA protections with User and Valid flags
+  int perm = PTE_U | PTE_V;
+  if(vma->prot & PROT_READ) perm |= PTE_R;
+  if(vma->prot & PROT_WRITE) perm |= PTE_W;
+  if(vma->prot & PROT_EXEC) perm |= PTE_X;
+
+  if(mappages(p->pagetable, va_down, PGSIZE, (uint64)pa, perm) != 0) {
+    kfree(pa);
+    p->killed = 1;
+  }
 }
 
 //

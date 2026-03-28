@@ -16,6 +16,9 @@
 #include "file.h"
 #include "fcntl.h"
 
+int vma_unmap(struct proc *p, uint64 addr, int len);
+void vma_uvmunmap(pagetable_t pagetable, uint64 va, uint64 len);
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -117,6 +120,130 @@ sys_fstat(void)
   if(argfd(0, 0, &f) < 0)
     return -1;
   return filestat(f, st);
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int len, prot, flags, fd, i;
+  struct file *f;
+  struct proc *p = myproc();
+  argaddr(0, &addr);
+  argint(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argfd(4, &fd, &f);
+
+  if((flags & MAP_SHARED) && (prot & PROT_WRITE) && !f->writable)
+    return -1;
+
+  if(PGROUNDDOWN(p->mmap - len)< PGROUNDUP(p->sz))
+    return -1;
+  
+  for(i = 0; i < 16; i++) {
+    if(!p->vma[i].used) {
+      break;
+    }
+  }
+  if (i == 16)
+    return -1;
+
+  p->mmap -= PGROUNDUP(len);
+
+  p->vma[i].used = 1;
+  p->vma[i].addr = p->mmap;
+  p->vma[i].len = len;
+  p->vma[i].prot = prot;
+  p->vma[i].flags = flags;
+  p->vma[i].fd = filedup(f);
+  p->vma[i].offset = 0;
+
+  return p->vma[i].addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+  argaddr(0, &addr);
+  argint(1, &len);
+
+  return vma_unmap(myproc(), addr, len);
+}
+
+int
+vma_unmap(struct proc *p, uint64 addr, int len)
+{
+  struct virtualMem *v = 0;
+  int i;
+
+  // 1. Find the VMA containing this address
+  for(i = 0; i < 16; i++){
+    if(p->vma[i].used && addr >= p->vma[i].addr && addr < p->vma[i].addr + p->vma[i].len){
+      v = &p->vma[i];
+      break;
+    }
+  }
+
+  if(v == 0) return -1;
+
+  // 2. Handle MAP_SHARED write-back
+  if(v->flags & MAP_SHARED){
+    // Iterate through the pages in the range being unmapped
+    for(uint64 a = addr; a < addr + len; a += PGSIZE){
+      pte_t *pte = walk(p->pagetable, a, 0);
+      // Only write back if the page was actually mapped and is "Dirty"
+      if(pte && (*pte & PTE_V) && (*pte & PTE_D)){
+        ilock(v->fd->ip);
+        writei(v->fd->ip, 0, a, v->offset + (a - v->addr), PGSIZE);
+        iunlock(v->fd->ip);
+      }
+    }
+  }
+
+  // 3. Remove the mappings from the page table and free physical memory
+  // Use a modified uvmunmap or a loop that calls uvmunmap carefully
+  vma_uvmunmap(p->pagetable, addr, len);
+
+  // 4. Update VMA metadata
+  if(addr == v->addr && len == v->len){
+    // Full unmap
+    fileclose(v->fd);
+    v->used = 0;
+  } else if(addr == v->addr){
+    // Unmapping from the start
+    v->addr += len;
+    v->len -= len;
+  } else {
+    // Unmapping from the end
+    v->len -= len;
+  }
+
+  return 0;
+}
+
+void
+vma_uvmunmap(pagetable_t pagetable, uint64 va, uint64 len)
+{
+  uint64 a;
+  pte_t *pte;
+
+  for(a = va; a < va + len; a += PGSIZE){
+    if((pte = walk(pagetable, a, 0)) == 0)
+      continue; // Skip if the page table level doesn't exist
+    if((*pte & PTE_V) == 0)
+      continue; // Skip if the page was never lazily loaded
+    
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("vma_uvmunmap: not a leaf");
+    
+    // Free the physical page and clear the PTE
+    uint64 pa = PTE2PA(*pte);
+    kfree((void*)pa);
+    *pte = 0;
+  }
 }
 
 // Create the path new as a link to the same inode as old.

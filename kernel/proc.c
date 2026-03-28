@@ -301,6 +301,13 @@ fork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
+  np->mmap = p->mmap;
+  for(i = 0; i < 16 ; i++) {
+    if(p->vma[i].used) {
+      np->vma[i] = p->vma[i];
+      np->vma[i].fd = filedup(p->vma[i].fd);
+    }
+  }
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)

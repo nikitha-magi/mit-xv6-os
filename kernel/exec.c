@@ -119,7 +119,12 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
-    
+
+  //set up process virtual memory
+  p->mmap = MMAPFRAME;
+  for(i = 0; i < 16; i++) {
+    p->vma[i].used = 0;
+  }
   // Commit to the user image.
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
